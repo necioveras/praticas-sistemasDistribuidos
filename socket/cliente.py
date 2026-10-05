@@ -1,74 +1,92 @@
-# Client.py (Python 3.11)
+#!/usr/bin/env python3
+"""Interactive Python 3.11 WebSocket client for the Java chat server."""
 
-import socket
+import argparse
+import asyncio
+import os
+import ssl
 import sys
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from websockets.asyncio.client import connect
+from websockets.exceptions import WebSocketException
 
 
-def main():
-    # Recupera host e porta dos argumentos da linha de comando.
-    # Caso não sejam informados, utiliza os valores padrão.
-    host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 5000
+DEFAULT_URL = "wss://753a84e2-6e13-4f64-aa73-1e5ccacb118a-00-vk0dsmua3qdl.riker.replit.dev/ws"
 
-    print(f"Conectando em {host}:{port} ...")
+
+def create_ssl_context() -> ssl.SSLContext:
+    """Use normal TLS verification and include the workspace's system CA bundle."""
+    context = ssl.create_default_context()
+    configured_bundle = os.environ.get("SSL_CERT_FILE")
+    candidates = [
+        configured_bundle,
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+    ]
+
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            context.load_verify_locations(cafile=candidate)
+            break
+
+    return context
+
+
+async def chat(endpoint: str) -> None:
+    parsed = urlsplit(endpoint)
+    if parsed.scheme not in {"ws", "wss"} or not parsed.hostname:
+        raise ValueError("Informe uma URL WebSocket completa, começando com ws:// ou wss://.")
+    if parsed.path != "/ws":
+        raise ValueError("O endpoint do servidor Java termina em /ws.")
+
+    connection_options = {"open_timeout": 10}
+    if parsed.scheme == "wss":
+        connection_options["ssl"] = create_ssl_context()
+
+    async with connect(endpoint, **connection_options) as websocket:
+        greeting = await asyncio.wait_for(websocket.recv(), timeout=10)
+        print(greeting)
+
+        while True:
+            try:
+                message = await asyncio.to_thread(input, "> ")
+            except EOFError:
+                print()
+                return
+
+            await websocket.send(message)
+            try:
+                response = await asyncio.wait_for(websocket.recv(), timeout=10)
+            except TimeoutError:
+                print("O servidor não respondeu dentro de 10 segundos.", file=sys.stderr)
+                return
+
+            print(response)
+            if message.strip().lower() == "exit":
+                return
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Conecte-se ao servidor Java WebSocket.")
+    parser.add_argument(
+        "url",
+        nargs="?",
+        default=DEFAULT_URL,
+        help=f"URL do servidor (padrão: {DEFAULT_URL})",
+    )
+    args = parser.parse_args()
 
     try:
-        # Cria o socket TCP
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-
-            # Conecta ao servidor
-            sock.connect((host, port))
-
-            # Cria interfaces de leitura e escrita em UTF-8
-            server_in = sock.makefile(
-                "r",
-                encoding="utf-8"
-            )
-
-            server_out = sock.makefile(
-                "w",
-                encoding="utf-8"
-            )
-
-            # Lê a mensagem de boas-vindas do servidor
-            mensagem = server_in.readline()
-
-            if mensagem:
-                print(mensagem.strip())
-
-            while True:
-
-                # Lê uma mensagem digitada pelo usuário
-                try:
-                    user_input = input("> ")
-                except EOFError:
-                    break
-
-                # Envia ao servidor
-                server_out.write(user_input + "\n")
-                server_out.flush()
-
-                # Aguarda a resposta
-                resposta = server_in.readline()
-
-                # String vazia indica que o servidor
-                # encerrou a conexão
-                if not resposta:
-                    print("(Servidor encerrou a conexão)")
-                    break
-
-                print(resposta.strip())
-
-                # Encerra caso o usuário tenha digitado exit
-                if user_input.strip().lower() == "exit":
-                    break
-
-            server_in.close()
-            server_out.close()
-
-    except OSError as e:
-        print(f"Erro: {e}", file=sys.stderr)
+        asyncio.run(chat(args.url))
+    except KeyboardInterrupt:
+        print("\nCliente encerrado.")
+    except (OSError, TimeoutError, ValueError, WebSocketException, ssl.SSLError) as error:
+        print(f"Falha na conexão WebSocket: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

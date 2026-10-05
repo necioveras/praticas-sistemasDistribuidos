@@ -1,58 +1,59 @@
-// Server.java (Java 8)
-import java.io.*;
-import java.net.*;
-import java.nio.charset.StandardCharsets;
+import java.net.InetSocketAddress;
+import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
 
-public class Server {
+import org.java_websocket.WebSocket;
+import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.WebSocketServer;
+
+public final class Server extends WebSocketServer {
+    private static final String BIND_ADDRESS = "0.0.0.0";
     private static final int PORT = 5000;
+    private static final String PATH = "/ws";
 
-    public static void main(String[] args) {
-        System.out.println("Servidor iniciado na porta " + PORT + " ...");
-        try (ServerSocket serverSocket = new ServerSocket(PORT)) {
-            while (true) {
-                Socket client = serverSocket.accept(); // espera um cliente
-                System.out.println("Cliente conectado: " + client.getRemoteSocketAddress());
-                // atende cada cliente em uma thread
-                new Thread(new ClientHandler(client)).start();
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    private Server() {
+        super(new InetSocketAddress(BIND_ADDRESS, PORT));
+        setReuseAddr(true);
     }
 
-    // Trata um cliente por vez
-    static class ClientHandler implements Runnable {
-        private final Socket socket;
-
-        ClientHandler(Socket socket) {
-            this.socket = socket;
+    @Override
+    public void onOpen(WebSocket connection, ClientHandshake handshake) {
+        if (!PATH.equals(handshake.getResourceDescriptor())) {
+            connection.close(1008, "Use o endpoint /ws");
+            return;
         }
+        System.out.println("Cliente WebSocket conectado: " + connection.getRemoteSocketAddress());
+        connection.send("Bem-vindo! Envie uma mensagem (ou 'exit' para sair).");
+    }
 
-        @Override
-        public void run() {
-            try (
-                BufferedReader in = new BufferedReader(
-                    new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-                PrintWriter out = new PrintWriter(
-                    new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8), true)
-            ) {
-                out.println("Bem-vindo! Envie uma mensagem (ou 'exit' para sair).");
-                String line;
-                while ((line = in.readLine()) != null) {
-                    if ("exit".equalsIgnoreCase(line.trim())) {
-                        out.println("Tchau!");
-                        break;
-                    }
-                    // Simples “echo” com transformação
-                    String resposta = "ECHO: " + line.toUpperCase();
-                    out.println(resposta);
-                    System.out.println("Por " + socket.getRemoteSocketAddress() + " : " + line);
-                }
-            } catch (IOException e) {
-                System.out.println("Conexão encerrada: " + e.getMessage());
-            } finally {
-                try { socket.close(); } catch (IOException ignored) {}
-            }
+    @Override
+    public void onMessage(WebSocket connection, String message) {
+        if ("exit".equalsIgnoreCase(message.trim())) {
+            connection.send("Tchau!");
+            connection.close(1000, "Cliente encerrou a sessão");
+            return;
         }
+        connection.send("ECHO: " + message.toUpperCase(Locale.ROOT));
+        System.out.println("Mensagem recebida: " + message);
+    }
+
+    @Override
+    public void onClose(WebSocket connection, int code, String reason, boolean remote) {
+        System.out.println("Cliente desconectado: " + connection.getRemoteSocketAddress());
+    }
+
+    @Override
+    public void onError(WebSocket connection, Exception exception) {
+        System.err.println("Erro WebSocket: " + exception.getMessage());
+    }
+
+    @Override
+    public void onStart() {
+        System.out.println("Servidor WebSocket pronto em ws://0.0.0.0:" + PORT + PATH);
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        new Server().start();
+        new CountDownLatch(1).await();
     }
 }
